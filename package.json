@@ -1,0 +1,32 @@
+{
+  "name": "spotify-client",
+  "version": "0.0.1",
+  "description": "Spotify music platform API client",
+  "main": "index.js",
+  "scripts": {
+    "test": "mocha tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ogallagher/spotify-client.git"
+  },
+  "keywords": [
+    "spotify",
+    "javascript"
+  ],
+  "author": "Owen Gallagher",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ogallagher/spotify-client/issues"
+  },
+  "homepage": "https://github.com/ogallagher/spotify-client#readme",
+  "dependencies": {
+    "dotenv": "^16.0.3",
+    "pino": "^8.11.0",
+    "spotify-sdk": "^1.0.0-beta1"
+  },
+  "devDependencies": {
+    "pino-pretty": "^10.0.0"
+  },
+  "type": "module"
+}
