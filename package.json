@@ -4,7 +4,8 @@
   "description": "Spotify music platform API client",
   "main": "index.js",
   "scripts": {
-    "test": "mocha tests"
+    "test": "mocha tests",
+    "run": "node index.js | ./node_modules/pino-pretty/bin.js"
   },
   "repository": {
     "type": "git",

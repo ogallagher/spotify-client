@@ -27,6 +27,11 @@ const HTTP_STATUS_OK_PUT = 201
 // set using .env
 let redirect_url = undefined
 
+const PATH_DIR_DATA = './data'
+const FILE_PROFILE = 'profile'
+const FILE_ARTISTS = 'artists'
+const FILE_SONGS = 'songs'
+
 /* TODO use spotify sdk to handle auth */
 function init_auth(client_id) {
 	return new Promise(function (res, rej) {
@@ -199,7 +204,6 @@ function init() {
 				token
 			)
 			logger.info(`initialized spotify api client w token ${token.substring(0,30)}...`)
-			console.log(client)
 			res(client)
 		})
 		.catch(rej)
@@ -224,10 +228,12 @@ function get_user(client, id) {
 }
 
 function get_top_artists(client) {
+	// 0-50
 	const limit = 50
+	
 	logger.info('get favorite artists for current user')
 	return client.getMyTopArtists({
-		// time_range: null
+		time_range: 'medium_term',
 		limit: limit
 		// offset: 0
 	})
@@ -237,10 +243,12 @@ function get_top_artists(client) {
 }
 
 function get_top_songs(client) {
-	const limit = 200
+	// 0-50
+	const limit = 50
+	
 	logger.info('get favorite songs for current user')
 	return client.getMyTopTracks({
-		// time_range: null
+		time_range: 'medium_term',
 		limit: limit
 		// offset: 0
 	})
@@ -250,7 +258,7 @@ function get_top_songs(client) {
 }
 
 function save(data, user_id, filename) {
-	let dir = `./data/${user_id}`
+	let dir = `${PATH_DIR_DATA}/${user_id}`
 	let file = `${dir}/${filename}.json`
 	
 	return fs.mkdir(dir, {
@@ -266,75 +274,131 @@ function save(data, user_id, filename) {
 	})
 }
 
-function main() {
-	// import spotify sdk
-	// import('spotify-sdk')
-	// http://thelinmichael.github.io/spotify-web-api-node
-	import('spotify-web-api-node')
-	.then((spotify_sdk) => {
-		spotify = spotify_sdk
-	})
-	.catch((err) => {
-		logger.error(`spotify-sdk import error: ${err.stack}`)
-	})
-	// import pino
-	.finally(() => {
-		return import('pino')
-	})
-	.then((pino_import) => {
-		pino = pino_import.default
-	})
-	.catch((err) => {
-		logger.error(`pino import error: ${err.stack}`)
-	})
-	// initialize api client
-	.finally(() => {
-		return init()
-		.then((client) => {
-			logger.info(`init passed`)
-			
-			// get basic profile
-			return get_user(client)
-			.then((profile_data) => {
-				logger.info(JSON.stringify(profile_data, undefined, '  '))
-				
-				return Promise.all([
-					Promise.resolve(profile_data),
-					get_top_artists(client),
-					get_top_songs(client)
-				])
-			})
-			.catch((err) => {
-				logger.error('failed to fetch user preferences: ' + JSON.stringify(err, undefined, '  '))
-				logger.error(err.stack)
-			})
-			.then(([profile, artists, songs]) => {
-				logger.info(JSON.stringify(artists, undefined, '  '))
-				let p_artists = save(artists, profile['id'], 'artists')
-				
-				logger.info(JSON.stringify(songs, undefined, '  '))
-				let p_songs = save(songs, profile['id'], 'songs')
-				
-				return Promise.all([p_artists, p_songs])
-			})
-			.catch((err) => {
-				logger.error('failed to save user preferences to local files: ' + JSON.stringify(err, undefined, '  '))
-				logger.error(err.stack)
-			})
-			.then((files) => {
-				logger.info(`saved user listening data to local files:\n${files.join('\n')}`)
-			})
-		})
-		.catch((err) => {
-			logger.error(`init failed: ${err.stack}`)
-		})
-		.finally(() => {
-			logger.info('end spotify client')
+function main(client) {
+	// get basic profile
+	return get_user(client)
+	
+	// get artists and songs
+	.then(
+		(profile) => {
+			logger.info(JSON.stringify(profile, undefined, '  '))
 		
-			// otherwise, local webserver runs indefinitely
-			process.exit()
-		})
+			// save profile data
+			return save(profile, profile['id'], FILE_PROFILE)
+			.catch((err) => { 
+				logger.error(`failed to save profile to local: ${err}\n${err.stack}`) 
+			})
+			
+			// get artists,songs from local files if they exist
+			.then(() => {
+				return Promise.all([
+					fs.readFile(`${PATH_DIR_DATA}/${profile['id']}/${FILE_ARTISTS}.json`),
+					fs.readFile(`${PATH_DIR_DATA}/${profile['id']}/${FILE_SONGS}.json`)
+				])
+				.then(
+					// local fetch passed; return contents
+					(data_strings) => {
+						let data = [
+							profile
+						]
+						for (let data_string of data_strings) {
+							data.push(JSON.parse(data_string))
+						}
+		
+						return Promise.resolve(data)
+					},
+					// failed to load artists,songs from local; get from spotify
+					(err) => {
+						logger.error(`failed to load artists and songs from local: ${err}\n${err.stack}`)
+
+						return Promise.all([
+							Promise.resolve(profile),
+							get_top_artists(client),
+							get_top_songs(client)
+						])
+					}
+				)
+			})
+		},
+		(err) => {
+			logger.error(`failed to get current user profile: ${err.stack}`)
+			process.exit(1)
+		}
+	)
+	
+	// save artists and songs
+	.then(
+		([profile, artists, songs]) => {
+			logger.debug(artists)
+			let p_artists = save(artists, profile['id'], FILE_ARTISTS)
+		
+			logger.debug(songs)
+			let p_songs = save(songs, profile['id'], FILE_SONGS)
+		
+			return Promise.all([p_artists, p_songs])
+		},
+		(err) => {
+			logger.error('failed to fetch user preferences: ' + JSON.stringify(err, undefined, '  '))
+			logger.error(err.stack)
+			process.exit(2)
+		}
+	)
+	
+	// confirm user listening data saved
+	.then(
+		(files) => {
+			logger.info(`saved user listening data to local files:\n${files.join('\n')}`)
+		},
+		(err) => {
+			logger.error('failed to save user preferences to local files: ' + JSON.stringify(err, undefined, '  '))
+			logger.error(err.stack)
+		}
+	)
+	
+	// quit
+	.then(() => {
+		logger.info('end spotify client')
+	
+		// otherwise, local webserver runs indefinitely
+		process.exit()
 	})
 }
 
-main()
+// import spotify sdk
+// import('spotify-sdk')
+// http://thelinmichael.github.io/spotify-web-api-node
+import('spotify-web-api-node')
+.then(
+	(spotify_sdk) => {
+		spotify = spotify_sdk
+	},
+	(err) => {
+		logger.error(`spotify-sdk import error: ${err.stack}`)
+	}
+)
+
+// import pino
+.then(() => {
+	return import('pino')
+})
+.then(
+	(pino_import) => {
+		pino = pino_import.default
+	},
+	(err) => {
+		logger.error(`pino import error: ${err.stack}`)
+	}
+)
+
+// initialize api client
+.then(init)
+.then(
+	(client) => {
+		logger.info(`init passed`)
+		main(client)
+	},
+	(err) => {
+		logger.error(`init failed: ${err.stack}`)
+		process.exit(1)
+	}
+)
