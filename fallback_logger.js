@@ -18,7 +18,7 @@ export class FallbackLogger {
 		return this.log(message, 1)
 	}
 
-	warning(message) {
+	warn(message) {
 		return this.log(message, 2)
 	}
 

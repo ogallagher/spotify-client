@@ -28,6 +28,7 @@
     "form-urlencoded": "^6.1.0",
     "open": "^9.1.0",
     "pino": "^8.11.0",
+    "showdown": "^2.1.0",
     "spotify-web-api-node": "^5.0.2",
     "uuid": "^9.0.0"
   },

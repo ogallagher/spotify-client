@@ -10,6 +10,7 @@ import * as uuid from 'uuid'
 import web_browser_open from 'open'
 import formurlencoded from 'form-urlencoded'
 import * as fs from 'node:fs/promises'
+import showdown from 'showdown'
 let pino = undefined
 let spotify = undefined
 import { FallbackLogger } from './fallback_logger.js'
@@ -78,7 +79,7 @@ function init_auth(client_id) {
 				
 				// token request code granted does not technically to the request i sent
 				if (token_echo != token_out) {
-					logger.warning(
+					logger.warn(
 						`incoming echo (${token_echo}) ` +
 						`did not match the original token-out value (${token_out}). ` +
 						`accepting anyway`
@@ -308,7 +309,7 @@ function summarize(profile, artists, songs) {
 				`- [${song['name']}](${song['external_urls']['spotify']}) \`popularity=${song['popularity']}\``
 			)
 		}
-	
+		
 		res(
 			[
 				`# Spotify user summary: ${profile['id']}`,
@@ -348,6 +349,66 @@ function summarize(profile, artists, songs) {
 	})
 }
 
+function file_convert(origin, target, origin_filetype='md', target_filetype='html') {
+	if (origin_filetype == 'md' && target_filetype == 'html') {
+		// markdown-html converter
+		const md_html_converter = new showdown.Converter({
+			omitExtraWLInCodeBlocks: true,
+			customizedHeaderId: true,
+			ghCompatibleHeaderId: true,
+			tables: true,
+			tasklists: true,
+			completeHTMLDocument: true
+		})
+		
+		const origin_path = `${origin}.${origin_filetype}`
+		const target_path = `${target}.${target_filetype}`
+		
+		return new Promise((res, rej) => {
+			logger.info(`compiling ${origin} to html at ${target}`)
+			
+			// read from origin
+			fs.readFile(origin_path, 'utf8')
+			// convert content
+			.then(
+				(markdown) => {
+					try {
+						let html = md_html_converter.makeHtml(markdown)
+						logger.info(`converted md to html. html length = ${html.length}`)
+						return html
+					}
+					// convert failed
+					catch (err) {
+						rej(new Error(`html compilation failed: ${err}\nsource markdown:\n${markdown}`))
+					}
+				},
+				// read failed
+				(err) => {
+					rej(new Error(`unable to parse origin file ${origin_path}: ${err}`))
+				}
+			)
+			// export to target
+			.then((html) => {
+				// export to file
+				return fs.writeFile(target_path, html)
+			})
+			// finish
+			.then(
+				() => {
+					logger.info(`wrote to target file ${target_path}`)
+					res(target_path)
+				},
+				(err) => {
+					rej(new Error(`failed to write to target file ${target_path}`))
+				}
+			)
+		})
+	}
+	else {
+		return Promise.reject(new Error(`unable to convert from ${origin_filetype} to ${target_filetype}`))
+	}
+}
+
 function main(client) {
 	// get basic profile
 	return get_user(client)
@@ -356,6 +417,14 @@ function main(client) {
 	.then(
 		(profile) => {
 			logger.info(JSON.stringify(profile, undefined, '  '))
+			
+			function fetch_listener_info() {
+				return Promise.all([
+					Promise.resolve(profile),
+					get_top_artists(client),
+					get_top_songs(client)
+				])
+			}
 		
 			// save profile data
 			return save(profile, profile['id'], FILE_PROFILE)
@@ -372,24 +441,31 @@ function main(client) {
 				.then(
 					// local fetch passed; return contents
 					(data_strings) => {
-						let data = [
-							profile
-						]
-						for (let data_string of data_strings) {
-							data.push(JSON.parse(data_string))
+						try {
+							let data = [
+								profile
+							]
+							for (let data_string of data_strings) {
+								try {
+									data.push(JSON.parse(data_string))
+								}
+								catch (err) {
+									throw new Error(`unable to parse file contents to json: ${data_string}`)
+								}
+							}
+						
+							return Promise.resolve(data)
 						}
-		
-						return Promise.resolve(data)
+						catch (err) {
+							// failed to parse listener info from local files; get from spotify
+							logger.warn(err.stack)
+							return fetch_listener_info()
+						}
 					},
 					// failed to load artists,songs from local; get from spotify
 					(err) => {
-						logger.error(`failed to load artists and songs from local: ${err}\n${err.stack}`)
-
-						return Promise.all([
-							Promise.resolve(profile),
-							get_top_artists(client),
-							get_top_songs(client)
-						])
+						logger.warn(`failed to load artists and songs from local: ${err}\n${err.stack}`)
+						return fetch_listener_info()
 					}
 				)
 			})
@@ -414,8 +490,17 @@ function main(client) {
 			.then((summary) => {
 				return save(summary, profile['id'], FILE_SUMMARY, 'md')
 			})
-		
-			return Promise.all([p_artists, p_songs, p_summary])
+			
+			let p_summary_html = p_summary
+			// convert summary to html
+			.then((summary_path) => {
+				let ext_idx = summary_path.lastIndexOf('.')
+				let summary_filename = summary_path.substring(0, ext_idx)
+				let summary_filetype = summary_path.substring(ext_idx+1)
+				return file_convert(summary_filename, summary_filename, summary_filetype, 'html')
+			})
+			
+			return Promise.all([p_artists, p_songs, p_summary, p_summary_html])
 		},
 		(err) => {
 			logger.error('failed to fetch user preferences: ' + JSON.stringify(err, undefined, '  '))
