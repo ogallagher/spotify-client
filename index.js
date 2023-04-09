@@ -32,6 +32,7 @@ const PATH_DIR_DATA = './data'
 const FILE_PROFILE = 'profile'
 const FILE_ARTISTS = 'artists'
 const FILE_SONGS = 'songs'
+const FILE_PLAYLISTS = 'playlists'
 const FILE_SUMMARY = 'summary'
 
 /* TODO use spotify sdk to handle auth */
@@ -46,7 +47,10 @@ function init_auth(client_id) {
 		var token_out = uuid.v4()
 		logger.debug(`spotify new token-out=${token_out}`)
 		var scope = [
-			'user-top-read'
+			// artists, songs
+			'user-top-read',
+			// playlists created and followed
+			'playlist-read-private'
 		].join(' ')
 		
 		let auth_url = new URL(URL_PATH_SPOTIFY_AUTH_REQUEST, URL_BASE_SPOTIFY_ACCOUNTS)
@@ -259,6 +263,35 @@ function get_top_songs(client) {
 	})
 }
 
+function get_top_playlists(client) {
+	// 0-50
+	const limit = 50
+	
+	logger.info('get created and followed playlists for current user')
+	return client.getUserPlaylists({
+		limit: limit,
+		offset: 0
+	})
+	.then((data) => {
+		return Promise.resolve(data.body)
+	})
+}
+
+/* TODO here */
+function get_playlist_songs(client, playlist_id) {
+	// 0-50
+	const limit = 50
+	
+	logger.info(`get up to ${50} songs in playlist ${playlist_id}`)
+	return client.getPlaylistTracks({
+		limit: limit,
+		offset: 0
+	})
+	.then((data) => {
+		return Promise.resolve(data.body)
+	})
+}
+
 function save(data, user_id, filename, filetype='json') {
 	let dir = `${PATH_DIR_DATA}/${user_id}`
 	let file = `${dir}/${filename}.${filetype}`
@@ -281,7 +314,7 @@ function save(data, user_id, filename, filetype='json') {
 	})
 }
 
-function summarize(profile, artists, songs) {
+function summarize(profile, artists, songs, playlists) {
 	return new Promise((res) => {
 		logger.info('parse profile image')
 		let profile_image_url = 
@@ -310,6 +343,19 @@ function summarize(profile, artists, songs) {
 			)
 		}
 		
+		logger.info('summarize top playlists')
+		let lines_playlists = []
+		for (let playlist of playlists['items']) {
+			lines_playlists.push(
+				`- [${playlist['name']}](${playlist['external_urls']['spotify']}) ` + 
+				`by [${playlist['owner']['display_name']}](${playlist['owner']['external_urls']['spotify']}) ` + 
+				`\`song-count=${playlist['tracks']['total']} public=${playlist['public']}\` ` +
+				`_${playlist['description']}_`
+			)
+			
+			let playlist_song_indent = ''
+		}
+		
 		res(
 			[
 				`# Spotify user summary: ${profile['id']}`,
@@ -335,9 +381,15 @@ function summarize(profile, artists, songs) {
 			.concat([
 				'',
 				`## Top ${songs['items'].length} Songs`,
-				'',
+				''
 			])
 			.concat(lines_songs)
+			.concat([
+				'',
+				`## Top ${playlists['items'].length} Playlists`,
+				''
+			])
+			.concat(lines_playlists)
 			.concat([
 				'',
 				'---',
@@ -413,7 +465,7 @@ function main(client) {
 	// get basic profile
 	return get_user(client)
 	
-	// get artists and songs
+	// get listener signature
 	.then(
 		(profile) => {
 			logger.info(JSON.stringify(profile, undefined, '  '))
@@ -422,7 +474,8 @@ function main(client) {
 				return Promise.all([
 					Promise.resolve(profile),
 					get_top_artists(client),
-					get_top_songs(client)
+					get_top_songs(client),
+					get_top_playlists(client)
 				])
 			}
 		
@@ -432,11 +485,12 @@ function main(client) {
 				logger.error(`failed to save profile to local: ${err}\n${err.stack}`) 
 			})
 			
-			// get artists,songs from local files if they exist
+			// get listener signature from local files if they exist
 			.then(() => {
 				return Promise.all([
 					fs.readFile(`${PATH_DIR_DATA}/${profile['id']}/${FILE_ARTISTS}.json`),
-					fs.readFile(`${PATH_DIR_DATA}/${profile['id']}/${FILE_SONGS}.json`)
+					fs.readFile(`${PATH_DIR_DATA}/${profile['id']}/${FILE_SONGS}.json`),
+					fs.readFile(`${PATH_DIR_DATA}/${profile['id']}/${FILE_PLAYLISTS}.json`)
 				])
 				.then(
 					// local fetch passed; return contents
@@ -453,7 +507,7 @@ function main(client) {
 									throw new Error(`unable to parse file contents to json: ${data_string}`)
 								}
 							}
-						
+							
 							return Promise.resolve(data)
 						}
 						catch (err) {
@@ -462,7 +516,7 @@ function main(client) {
 							return fetch_listener_info()
 						}
 					},
-					// failed to load artists,songs from local; get from spotify
+					// failed to load listener signature from local; get from spotify
 					(err) => {
 						logger.warn(`failed to load artists and songs from local: ${err}\n${err.stack}`)
 						return fetch_listener_info()
@@ -478,14 +532,17 @@ function main(client) {
 	
 	// save listener info to files
 	.then(
-		([profile, artists, songs]) => {
+		([profile, artists, songs, playlists]) => {
 			logger.debug(artists)
 			let p_artists = save(artists, profile['id'], FILE_ARTISTS, 'json')
 		
 			logger.debug(songs)
 			let p_songs = save(songs, profile['id'], FILE_SONGS, 'json')
 			
-			let p_summary = summarize(profile, artists, songs)
+			logger.debug(playlists)
+			let p_playlists = save(playlists, profile['id'], FILE_PLAYLISTS, 'json')
+			
+			let p_summary = summarize(profile, artists, songs, playlists)
 			// save summary
 			.then((summary) => {
 				return save(summary, profile['id'], FILE_SUMMARY, 'md')
@@ -497,7 +554,13 @@ function main(client) {
 				let ext_idx = summary_path.lastIndexOf('.')
 				let summary_filename = summary_path.substring(0, ext_idx)
 				let summary_filetype = summary_path.substring(ext_idx+1)
+				
 				return file_convert(summary_filename, summary_filename, summary_filetype, 'html')
+				// show summary html in browser
+				.then((summary_html_path) => {
+					web_browser_open(summary_html_path)
+					return summary_html_path
+				})
 			})
 			
 			return Promise.all([p_artists, p_songs, p_summary, p_summary_html])
