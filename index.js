@@ -31,6 +31,7 @@ const PATH_DIR_DATA = './data'
 const FILE_PROFILE = 'profile'
 const FILE_ARTISTS = 'artists'
 const FILE_SONGS = 'songs'
+const FILE_SUMMARY = 'summary'
 
 /* TODO use spotify sdk to handle auth */
 function init_auth(client_id) {
@@ -257,20 +258,93 @@ function get_top_songs(client) {
 	})
 }
 
-function save(data, user_id, filename) {
+function save(data, user_id, filename, filetype='json') {
 	let dir = `${PATH_DIR_DATA}/${user_id}`
-	let file = `${dir}/${filename}.json`
+	let file = `${dir}/${filename}.${filetype}`
 	
 	return fs.mkdir(dir, {
 		recursive: true
 	})
 	.then(() => {
-		return fs.writeFile(file, JSON.stringify(data, undefined, '  '), {
+		let content = data
+		if (filetype == 'json') {
+			content = JSON.stringify(data, undefined, '  ')
+		}
+		
+		return fs.writeFile(file, content, {
 			encoding: 'utf8'
 		})
 	})
 	.then(() => {
 		return Promise.resolve(file)
+	})
+}
+
+function summarize(profile, artists, songs) {
+	return new Promise((res) => {
+		logger.info('parse profile image')
+		let profile_image_url = 
+			(profile['images'] != undefined && profile['images'].length > 0)
+			? profile['images'][0]['url']
+			: undefined
+	
+		let line_profile_image = 
+			profile_image_url !== undefined
+			? `![${profile['id']} profile image](${profile_image_url})`
+			: ''
+	
+		logger.info('summarize top artists')
+		let lines_artists = []
+		for (let artist of artists['items']) {
+			lines_artists.push(
+				` - [${artist['name']}](${artist['external_urls']['spotify']})`
+			)
+		}
+	
+		logger.info('summarize top songs')
+		let lines_songs = []
+		for (let song of songs['items']) {
+			lines_songs.push(
+				`- [${song['name']}](${song['external_urls']['spotify']}) \`popularity=${song['popularity']}\``
+			)
+		}
+	
+		res(
+			[
+				`# Spotify user summary: ${profile['id']}`,
+				'',
+			]
+			.concat([
+				`Last update: ${new Date().toString()}`,
+				'',
+				line_profile_image,
+				'',
+				'| key | value |',
+				'| --- | ----- |',
+				`| display name | ${profile['display_name']} |`,
+				`| id | ${profile['id']} |`,
+				`| followers count | ${profile['followers']['total']} |`,
+				''	
+			])
+			.concat([
+				`## Top ${artists['items'].length} Artists`,
+				''
+			])
+			.concat(lines_artists)
+			.concat([
+				'',
+				`## Top ${songs['items'].length} Songs`,
+				'',
+			])
+			.concat(lines_songs)
+			.concat([
+				'',
+				'---',
+				'',
+				'Generated with [github.com/ogallagher/spotify-client](https://github.com/ogallagher/spotify-client).'
+			])
+			.join('\n')
+		)
 	})
 }
 
@@ -326,16 +400,22 @@ function main(client) {
 		}
 	)
 	
-	// save artists and songs
+	// save listener info to files
 	.then(
 		([profile, artists, songs]) => {
 			logger.debug(artists)
-			let p_artists = save(artists, profile['id'], FILE_ARTISTS)
+			let p_artists = save(artists, profile['id'], FILE_ARTISTS, 'json')
 		
 			logger.debug(songs)
-			let p_songs = save(songs, profile['id'], FILE_SONGS)
+			let p_songs = save(songs, profile['id'], FILE_SONGS, 'json')
+			
+			let p_summary = summarize(profile, artists, songs)
+			// save summary
+			.then((summary) => {
+				return save(summary, profile['id'], FILE_SUMMARY, 'md')
+			})
 		
-			return Promise.all([p_artists, p_songs])
+			return Promise.all([p_artists, p_songs, p_summary])
 		},
 		(err) => {
 			logger.error('failed to fetch user preferences: ' + JSON.stringify(err, undefined, '  '))
@@ -350,7 +430,7 @@ function main(client) {
 			logger.info(`saved user listening data to local files:\n${files.join('\n')}`)
 		},
 		(err) => {
-			logger.error('failed to save user preferences to local files: ' + JSON.stringify(err, undefined, '  '))
+			logger.error('failed to save user signature to local files: ' + JSON.stringify(err, undefined, '  '))
 			logger.error(err.stack)
 		}
 	)

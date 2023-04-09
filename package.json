@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "mocha tests",
-    "run": "node index.js | ./node_modules/pino-pretty/bin.js"
+    "main": "node index.js | ./node_modules/pino-pretty/bin.js"
   },
   "repository": {
     "type": "git",
