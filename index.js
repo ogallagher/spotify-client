@@ -273,21 +273,49 @@ function get_top_playlists(client) {
 		offset: 0
 	})
 	.then((data) => {
-		return Promise.resolve(data.body)
+		const playlists = data.body
+		
+		// store songs per playlist id in this attr
+		playlists['songs'] = {}
+		
+		let p_playlist_songs = []
+		for (let playlist of playlists['items']) {
+			p_playlist_songs.push(get_playlist_songs(client, playlist['id']))
+		}
+		
+		return Promise.allSettled(p_playlist_songs)
+		.then((playlist_songs_list) => {
+			// add songs list as attribute to each playlist
+			for (let playlist_songs of playlist_songs_list) {
+				if (playlist_songs.status == 'fulfilled') {
+					let songs = playlist_songs.value['items']
+					let id = playlist_songs.value['playlist_id']
+					
+					playlists['songs'][id] = songs
+					logger.info(`added ${songs.length} songs to playlist ${id}`)
+				}
+				else {
+					logger.warn(`unable to load songs for playlist: ${playlist_songs.reason}`)
+				}
+			}
+			
+			return playlists
+		})
 	})
 }
 
-/* TODO here */
 function get_playlist_songs(client, playlist_id) {
 	// 0-50
 	const limit = 50
 	
 	logger.info(`get up to ${50} songs in playlist ${playlist_id}`)
-	return client.getPlaylistTracks({
+	return client.getPlaylistTracks(playlist_id, {
 		limit: limit,
-		offset: 0
+		offset: 0,
+		fields: 'items(track(name,external_urls,id,popularity))'
 	})
 	.then((data) => {
+		data.body['playlist_id'] = playlist_id
 		return Promise.resolve(data.body)
 	})
 }
@@ -353,7 +381,21 @@ function summarize(profile, artists, songs, playlists) {
 				`_${playlist['description']}_`
 			)
 			
-			let playlist_song_indent = ''
+			if (playlists['songs'].hasOwnProperty(playlist['id'])) {
+				let song_indent = '    '
+				for (let song of playlists['songs'][playlist['id']]) {
+					if (song.hasOwnProperty('track')) {
+						const track = song['track']
+						lines_playlists.push(
+							`${song_indent}- [${track['name']}](${track['external_urls']['spotify']}) ` + 
+							`\`popularity=${track['popularity']}\``
+						)
+					}
+					else {
+						logger.info(`omit entry that is not a song/track from playlist summary: ${song}`)
+					}
+				}
+			}
 		}
 		
 		res(
@@ -539,7 +581,7 @@ function main(client) {
 			logger.debug(songs)
 			let p_songs = save(songs, profile['id'], FILE_SONGS, 'json')
 			
-			logger.debug(playlists)
+			logger.debug(playlists)			
 			let p_playlists = save(playlists, profile['id'], FILE_PLAYLISTS, 'json')
 			
 			let p_summary = summarize(profile, artists, songs, playlists)
@@ -563,7 +605,7 @@ function main(client) {
 				})
 			})
 			
-			return Promise.all([p_artists, p_songs, p_summary, p_summary_html])
+			return Promise.all([p_artists, p_songs, p_playlists, p_summary, p_summary_html])
 		},
 		(err) => {
 			logger.error('failed to fetch user preferences: ' + JSON.stringify(err, undefined, '  '))
