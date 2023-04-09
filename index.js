@@ -385,11 +385,16 @@ function summarize(profile, artists, songs, playlists) {
 				let song_indent = '    '
 				for (let song of playlists['songs'][playlist['id']]) {
 					if (song.hasOwnProperty('track')) {
-						const track = song['track']
-						lines_playlists.push(
-							`${song_indent}- [${track['name']}](${track['external_urls']['spotify']}) ` + 
-							`\`popularity=${track['popularity']}\``
-						)
+						try {
+							const track = song['track']
+							lines_playlists.push(
+								`${song_indent}- [${track['name']}](${track['external_urls']['spotify']}) ` + 
+								`\`popularity=${track['popularity']}\``
+							)
+						}
+						catch (err) {
+							logger.info(`omit song from playlist: ${err.stack}`)
+						}
 					}
 					else {
 						logger.info(`omit entry that is not a song/track from playlist summary: ${song}`)
