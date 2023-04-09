@@ -365,6 +365,7 @@ function main(client) {
 }
 
 // import spotify sdk
+// initially tried this one, but as of 2023-04 it was throwing errors on import for my version of node
 // import('spotify-sdk')
 // http://thelinmichael.github.io/spotify-web-api-node
 import('spotify-web-api-node')
