@@ -35,6 +35,8 @@ const FILE_SONGS = 'songs'
 const FILE_PLAYLISTS = 'playlists'
 const FILE_SUMMARY = 'summary'
 
+const PLAYLIST_SONGS_FETCH_MAX = 500
+
 /* TODO use spotify sdk to handle auth */
 function init_auth(client_id) {
 	return new Promise(function (res, rej) {
@@ -137,7 +139,7 @@ function token_auth(client_id, client_secret, token_code) {
 			res(response.access_token, response.expires_in, response.refresh_token)
 		})
 		.catch((err) => {
-			rej(new Error(`failed to fetch api token: status=${response_stream.status}`))
+			rej(new Error(`failed to fetch api token: status=${err.stack}`))
 		})
 	})
 }
@@ -199,18 +201,23 @@ function init() {
 			}
 		})
 		.then((token, expiry_seconds, refresh_token) => {
-			let client = init_api_client(
-				{
-					clientId: process.env.SPOTIFY_CLIENT_ID,
-					secretId: process.env.SPOTIFY_SECRET_ID,
-					clientSecret: process.env.SPOTIFY_SECRET_ID,
-					redirect_uri: redirect_url,
-					redirectUri: redirect_url
-				},
-				token
-			)
-			logger.info(`initialized spotify api client w token ${token.substring(0,30)}...`)
-			res(client)
+			if (token != undefined) {
+				let client = init_api_client(
+					{
+						clientId: process.env.SPOTIFY_CLIENT_ID,
+						secretId: process.env.SPOTIFY_SECRET_ID,
+						clientSecret: process.env.SPOTIFY_SECRET_ID,
+						redirect_uri: redirect_url,
+						redirectUri: redirect_url
+					},
+					token
+				)
+				logger.info(`initialized spotify api client w token ${token.substring(0,30)}...`)
+				res(client)
+			}
+			else {
+				rej(new Error(`token is undefined: token=${token}`))
+			}
 		})
 		.catch(rej)
 	})
@@ -288,14 +295,22 @@ function get_top_playlists(client) {
 			// add songs list as attribute to each playlist
 			for (let playlist_songs of playlist_songs_list) {
 				if (playlist_songs.status == 'fulfilled') {
-					let songs = playlist_songs.value['items']
-					let id = playlist_songs.value['playlist_id']
+					try {
+						let songs = playlist_songs.value['items']
+						let id = playlist_songs.value['playlist_id']
 					
-					playlists['songs'][id] = songs
-					logger.info(`added ${songs.length} songs to playlist ${id}`)
+						playlists['songs'][id] = songs
+						logger.info(`added ${songs.length} songs to playlist ${id}`)
+					}
+					catch(err) {
+						throw new Error(
+							`failed to parse playlist_songs: ${err.stack}\n` +
+							`data=${JSON.stringify(playlist_songs, undefined, 2)}`
+						)
+					}
 				}
 				else {
-					logger.warn(`unable to load songs for playlist: ${playlist_songs.reason}`)
+					logger.warn(`unable to load songs for playlist: ${playlist_songs.reason.stack}`)
 				}
 			}
 			
@@ -304,20 +319,87 @@ function get_top_playlists(client) {
 	})
 }
 
-function get_playlist_songs(client, playlist_id) {
-	// 0-50
-	const limit = 50
-	
-	logger.info(`get up to ${50} songs in playlist ${playlist_id}`)
-	return client.getPlaylistTracks(playlist_id, {
-		limit: limit,
-		offset: 0,
-		fields: 'items(track(name,external_urls,id,popularity))'
-	})
-	.then((data) => {
-		data.body['playlist_id'] = playlist_id
-		return Promise.resolve(data.body)
-	})
+/**
+ * Get list of songs in playlist.
+ * 
+ * Uses pagination in order to fetch a total limit greater than the spotify api fetch page 
+ * limit of 50 items.
+ * 
+ * @param {SpotifyApiClient} client Spotify API client.
+ * @param {string} playlist_id Playlist id.
+ * @param {integer} limit Maximum total number of tracks to fetch for one playlist.
+ * @param {integer} offset Url for next page of results.
+ */ 
+function get_playlist_songs(client, playlist_id, limit=PLAYLIST_SONGS_FETCH_MAX, offset=0, total_remaining=undefined) {
+	try {
+		// 0-50
+		const page_limit = limit <= 50 ? limit : 50
+		
+		logger.info(`get up to ${page_limit} songs in playlist ${playlist_id} at offset=${offset}`)
+		let p = client.getPlaylistTracks(playlist_id, {
+			limit: page_limit,
+			offset: offset,
+			fields: 'total,next,items(track(name,external_urls,id,popularity))'
+		})
+		.then((data) => {
+			// number of items fetched in current page
+			let count = data.body['items'].length 
+			
+			limit = limit-count
+			
+			// update number of items left to fetch
+			if (total_remaining === undefined) {
+				total_remaining = data.body['total'] - count
+			}
+			
+			// shrink limit if greater than number of remaining tracks in this list
+			if (limit > total_remaining) {
+				limit = total_remaining
+			}
+			
+			let next_url = data.body['next']
+			if (next_url && limit > 0) {
+				// fetch next page recursively and return combined results
+				let next_offset = offset_from_spotify_api_url(next_url)
+				logger.info(`playlist ${playlist_id} remaining songs count ${limit}>0; fetch page at offset=${next_offset}`)
+				return get_playlist_songs(
+					client, 
+					playlist_id, 
+					// limit
+					limit,
+					// offset
+					next_offset,
+					total_remaining
+				).then((playlist_songs) => {
+					// combine results
+					playlist_songs['items'] = playlist_songs['items'].concat(data.body['items'])
+					playlist_songs['total'] += count
+					
+					return playlist_songs
+				})
+			}
+			else {
+				// no more results
+				logger.debug(`playlist ${playlist_id} complete at offset=${offset}`)
+				data.body['playlist_id'] = playlist_id
+				return Promise.resolve(data.body)
+			}
+		})
+		
+		return p
+	}
+	catch(err) {
+		throw new Error(`unknown failure in get_playlist_songs: ${err.stack}`)
+	}
+}
+
+/**
+ * Given a spotify url string, extract the offset (page index) from the query parameters.
+ */ 
+function offset_from_spotify_api_url(url_str) {
+	// example url = https://api.spotify.com/v1/me/shows?offset=1&limit=1
+	let url = new URL(url_str)
+	return parseInt(url.searchParams.get('offset'))
 }
 
 function save(data, user_id, filename, filetype='json') {
@@ -418,6 +500,7 @@ function summarize(profile, artists, songs, playlists) {
 				`| display name | ${profile['display_name']} |`,
 				`| id | ${profile['id']} |`,
 				`| followers count | ${profile['followers']['total']} |`,
+				`| maximum number of songs to fetch for each playlist | ${PLAYLIST_SONGS_FETCH_MAX} |`,
 				''	
 			])
 			.concat([
