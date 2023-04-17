@@ -1,6 +1,6 @@
 {
   "name": "spotify-client",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Spotify music platform API client",
   "main": "index.js",
   "scripts": {
